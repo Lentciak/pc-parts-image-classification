@@ -1,0 +1,763 @@
+---
+title: "Klasyfikacja komponentów komputera"
+author: "Igor Nowiński"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-summary: "Pokaż kod"
+    code-overflow: wrap
+    smooth-scroll: true
+    highlight-style: arrow
+    code-block-bg: true
+    code-block-border-left: "#31BAE9"
+    toc: true
+    toc-title: "Spis treści"
+language: 'polski.yml'
+editor: source
+lightbox: true
+echo: false
+warning: false
+message: false
+self-contained: true
+embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+# Cel badania
+
+Celem jest stworzenie jak najlepszej sieci neuronowej, przeznaczonej do klasyfikacji czternastu komponentów komputera.
+
+# Opis zbioru danych
+
+```{r wczytanie bibliotek oraz danych}
+library(keras)
+library(imager)
+library(tidyverse)
+library(gt)
+library(ModelMetrics)
+data_dir = "dane/pc_parts"
+classes <- list.dirs("dane/pc_parts", full.names = FALSE, recursive = FALSE)
+files <-  list.files(data_dir, recursive = T, full.name = T)
+train_ratio = 0.7
+val_ratio = 0.15
+
+
+przyklad_cpu <- load.image("dane/pc_parts/cpu/14.jpg")
+przyklad_cables <- load.image("dane/pc_parts/cables/154.jpg")
+przyklad_case <- load.image("dane/pc_parts/case/154.jpg")
+przyklad_gpu <- load.image("dane/pc_parts/gpu/154.jpg")
+przyklad_hdd <- load.image("dane/pc_parts/hdd/154.jpg")
+przyklad_headset <- load.image("dane/pc_parts/headset/154.jpg")
+przyklad_keyboard <- load.image("dane/pc_parts/keyboard/37.jpg")
+przyklad_microphone <- load.image("dane/pc_parts/microphone/150.jpg")
+przyklad_monitor <- load.image("dane/pc_parts/monitor/154.jpg")
+przyklad_motherboard <- load.image("dane/pc_parts/motherboard/154.jpg")
+przyklad_mouse <- load.image("dane/pc_parts/mouse/9.jpg")
+przyklad_ram <- load.image("dane/pc_parts/ram/154.jpg")
+przyklad_speakers <- load.image("dane/pc_parts/speakers/154.jpg")
+przyklad_webcam <- load.image("dane/pc_parts/webcam/154.jpg")
+```
+
+```{r podział zdjęć na zbiór treningowy, walidacyjny i testowy, eval=FALSE}
+for (class in classes){
+    files = list.files(file.path(data_dir, class), full.names = T)
+    
+    n <- length(files)
+    
+    indices <- sample(1:n)
+    
+    train_indices <- indices[1:floor(train_ratio * n)]
+    val_indices <- indices[(floor(train_ratio * n)+1):(floor((train_ratio + val_ratio)*n))]
+    test_indices <- indices[(floor((train_ratio + val_ratio)* n)+ 1):n]
+    
+    dir.create(file.path("dane/dataset/train", class), recursive = TRUE, showWarnings = FALSE)
+    dir.create(file.path("dane/dataset/val", class), recursive = TRUE, showWarnings = FALSE)
+    dir.create(file.path("dane/dataset/test", class), recursive = TRUE, showWarnings = FALSE)
+
+    # Kopiowanie plików dla zbioru treningowego
+    for (i in train_indices){
+        file.copy(files[i], file.path("dane/dataset/train", class))
+    }
+    # Kopowanie plików dla zbioru walidacyjnego 
+    for (i in val_indices){
+        file.copy(files[i], file.path("dane/dataset/val", class))
+    }
+    # Kopowanie plików dla zbioru testowego
+    for (i in test_indices){
+        file.copy(files[i], file.path("dane/dataset/test", class))
+    }
+}
+```
+
+Zbiór danych pochodzi z [Kaggle](https://www.kaggle.com/datasets/asaniczka/pc-parts-images-dataset-classification). Zdjęcia zostały zebrane z platformy Google Images i przekonwertowane na format 256x256. Zawiera on `r length(files)` zdjęć różnych komponentów komputera.
+
+### Przedstawienie klas zbioru danych
+
+Zdjęcia podzielone są na czternaście klas opisujących następujące komponenty:
+
+-   `kable`
+-   `obudowa`
+-   `procesor`
+-   `karta graficzna`
+-   `dysk twardy`
+-   `słuchawki`
+-   `klawiatura`
+-   `mikrofon`
+-   `monitor`
+-   `płyta główna`
+-   `myszka`
+-   `pamięć RAM`
+-   `głośniki`
+-   `kamera internetowa`
+
+```{r podział na zbiór treningowy, walidacyjny i testowy, eval=FALSE}
+datagen <- image_data_generator(
+  rescale = 1/255,
+  rotation_range = 40,
+  width_shift_range = 0.2,
+  height_shift_range = 0.2,
+  shear_range = 0.2,
+  zoom_range = 0.2,
+  horizontal_flip = TRUE
+)
+
+test_datagen <- image_data_generator(rescale = 1/255)
+
+
+train_generator <- flow_images_from_directory(
+    "dane/dataset/train", datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+
+val_generator <- flow_images_from_directory(
+    "dane/dataset/val", test_datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+
+test_generator <- flow_images_from_directory(
+    "dane/dataset/test", test_datagen, 
+    target_size = c(150, 150), batch_size = 32, class_mode = "categorical"
+)
+
+train_classes <- table(train_generator$classes)
+val_classes <- table(val_generator$classes)
+test_classes <- table(test_generator$classes)
+tabela_podzialu <- rbind(train_classes, val_classes,test_classes)
+```
+
+```{r zapis tabeli podziału, eval=FALSE}
+saveRDS(tabela_podzialu, "rds/tabela_podzialu.rds")
+```
+
+
+```{r wczytanie tabeli}
+tabela_podzialu <- readRDS("rds/tabela_podzialu.rds")
+```
+
+
+```{r}
+steps_per_epoch <- as.integer(sum(tabela_podzialu[1,]) / 32)
+val_steps <- as.integer(sum(tabela_podzialu[2,]) / 32)
+```
+
+
+### Przykładowe zdjęcia
+
+```{css, echo = FALSE}
+.output {
+max-height: 500px;
+overflow-y: scroll;
+}
+```
+
+```{r przykładowe zdjęcie klas}
+#| class: output
+#| layout-ncol: 2
+#| label: fig-przyklady
+#| fig-cap: Przykładowe zdjęcia w poszczególnych klasach
+#| fig-subcap: ["cables", "case", "cpu", "gpu", "hdd", "headset", "keyboard", "microphone", "monitor", "motherboard", "mouse", "ram", "speakers", "webcam"]
+plot(przyklad_cables)
+plot(przyklad_case)
+plot(przyklad_cpu)
+plot(przyklad_gpu)
+plot(przyklad_hdd)
+plot(przyklad_headset)
+plot(przyklad_keyboard)
+plot(przyklad_microphone)
+plot(przyklad_monitor)
+plot(przyklad_motherboard)
+plot(przyklad_mouse)
+plot(przyklad_ram)
+plot(przyklad_speakers)
+plot(przyklad_webcam)
+```
+
+### Podział zbioru na część treningową, walidacyjną i testową
+
+Ustaliłem następujący podział zbioru:
+
+-   treningowy - 0.7
+-   walidacyjny - 0.15
+-   testowy - 0.15
+
+
+Podczas podziału nadałem takie wartości klasom:
+
+-   0 - `cables`
+-   1 - `case`
+-   2 - `cpu`
+-   3 - `gpu`
+-   4 - `hdd`
+-   5 - `headset`
+-   6 - `keyboard`
+-   7 - `microphone`
+-   8 - `monitor`
+-   9 - `motherboard`
+-   10 - `mouse`
+-   11 - `ram`
+-   12 - `speakers`
+-   13 - `webcam`
+
+```{r tabela podziału na zbiory}
+#| label: tbl-tabela-podzialu
+#| tbl-cap: Liczba zdjęć danej klasy w zbiorze treningowym, walidacyjnym i testowym
+tabela_podzialu <- as.data.frame(tabela_podzialu)
+rownames(tabela_podzialu) <- c("Treningowy", "Walidacyjny", "Testowy")
+tabela_podzialu %>% gt(rownames_to_stub = T)
+```
+
+Zbiór nie jest zbalansowany, dużo mniej jest zdjęć procesorów i kamer internetowych od reszty komponentów. Najwięcej jest zdjęć kabli oraz głośników.
+
+### Augmentacja obrazów
+
+Przed modelowaniem zdjęcia przekształciłem w następujący sposób:
+
+-   `rescale` = 1/255
+-   `rotation_range` = 40
+-   `width_shift_range` = 0.2
+-   `height_shift_range` = 0.2
+-   `shear_range` = 0.2
+-   `zoom_range` = 0.2
+-   `horizontal_flip` = T
+
+Dodatkowo zmieniłem rozmiar zdjęć z 256x256 na 150x150, aby zoptymalizować proces uczenia. `batch_size` ustawiłem na 32.
+
+
+# Budowa sieci neuronowych
+
+Jako funkcję aktywacji wybrałem *relu*, a do ostatniej warstwy - *softmax*. Modele uczone były przez różne ilości epok z `r  steps_per_epoch` krokami w każdej z nich. Walidacja odbyła się na `r val_steps` krokach. Sprawdzenie na zbiorze testowym wykonałem na podstawie 10 kroków.
+
+Użyłem kategorycznej entropii krzyżowej jako funkcji straty i *adam* jako optymalizatora. Do domyślnych miar dopasowania wybrałem dodatkowo *recall*, *precision* i *auc*, ze względu na niezbalansowane klasy.
+
+## Modele zbudowane za pomocą warstw gęstych i konwolucyjnych
+
+::: {.panel-tabset}
+
+
+## 1
+
+Pierwszą sieć zbudowałem z założeniem, aby nie była zbytnio skomplikowana. Składa się z 5 warstw gęstych o 16, 32,64,32 i 14 neuronach.
+
+```{r model1, eval=FALSE}
+model1 <- keras_model_sequential() %>%
+  layer_dense(units = 16, activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+
+model1 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = "adam", 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history1, eval=FALSE}
+history <- model1 %>% fit(
+    train_generator, 
+    steps_per_epoch =steps_per_epoch, 
+    epochs = 20, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r model1 ewaluacja, eval=FALSE}
+evaulate_model1 <- model1 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model1, eval=FALSE}
+save_model_tf(model1, "rds/modele/model1")
+saveRDS(list(history, evaluate_model1), "rds/model1_list.rds")
+```
+
+```{r wczytanie model1}
+model1 <- load_model_tf("rds/modele/model1")
+model1_list <- readRDS("rds/model1_list.rds")
+history1 <- model1_list[[1]]
+evaluate_model1 <- model1_list[[2]]
+```
+
+```{r pokazanie modelu1}
+model1
+```
+
+```{r pierwsza sieć}
+#| label: fig-history1
+#| fig-cap: Uczenie modelu 1
+plot(history1)
+```
+
+Na wykresie możemy zauważyć, że model bardzo słabo się dopasował do danych. Wraz z upływem czasu nie poprawiał się, dlatego zakończyłem uczenie po 20 epokach.
+
+## 2
+
+Dodałem jedną warstwę gęstą, oraz warstwy dropout, a do istniejących zmieniłem liczby neuronów na 64,128,512,512, 32 i 14.
+
+```{r model2, eval=FALSE}
+model2 <- keras_model_sequential() %>%
+  layer_dense(units = 32, activation = 'relu',
+              input_shape = c(150, 150, 3)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dropout(0.1) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+
+model2 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = "adam", 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history2, eval=FALSE}
+history <- model2 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 100, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model2, eval=FALSE}
+evaluate_model2 <- model2 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model2, eval=FALSE}
+save_model_tf(model2, "rds/modele/model2")
+saveRDS(list(history, evaluate_model2), "rds/model2_list.rds")
+```
+
+```{r wczytanie model2}
+model2 <- load_model_tf("rds/modele/model2")
+model2_list <- readRDS("rds/model2_list.rds")
+history2 <- model2_list[[1]]
+evaluate_model2 <- model2_list[[2]]
+```
+
+```{r pokazanie modelu2}
+model2
+```
+
+```{r druga sieć}
+#| label: fig-history2
+#| fig-cap: Uczenie modelu 2
+plot(history2)
+```
+
+Model poprawił się względem pierwszego, ale nie osiągnął akceptowalnego wyniku. Dodatkowo po długim czasie uczenia wystapiło przeuczenie. Czas na zmianę strategii.
+
+## 3
+
+Stworzyłem nową architekturę, w której użyłem 4 warstwy konwolucyjne (32,64,64,32) z jądrami rozmiaru 3x3, pomiędzy którymi znajdują się warstwy *max pooling* z rozmiarem 2x2. Następnie dołożyłem cztery warstwy gęste (64,64,32,14) i dwie warstwy *dropout* z parametrem `rate` równym 0.2.
+
+
+```{r model3, eval=FALSE}
+model3 <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), 
+                activation = 'relu', input_shape = c(150, 150, 3)) %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+  
+
+model3 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = 'adam', 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history3, eval=FALSE}
+history <- model3 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 100, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model3, eval=FALSE}
+evaluate_model3 <- model3 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model3, eval=FALSE}
+save_model_tf(model3, "rds/modele/model3")
+saveRDS(list(history, evaluate_model3), "rds/model3_list.rds")
+```
+
+```{r wczytanie model3}
+model3 <- load_model_tf("rds/modele/model3")
+model3_list <- readRDS("rds/model3_list.rds")
+history3 <- model3_list[[1]]
+evaluate_model3 <- model3_list[[2]]
+```
+
+```{r pokazanie modelu3}
+model3
+```
+
+
+```{r trzecia sieć}
+#| label: fig-history3
+#| fig-cap: Uczenie modelu 3
+plot(history3)
+```
+
+Wyniki jeszcze bardziej się poprawiły.
+
+## 4
+
+Zmianie uległa część z warstwami gęstymi. Chciałem spróbować powiększyć liczbę neuronów w warstwie po spłaszczeniu.
+
+```{r model4, eval=FALSE}
+model4 <- keras_model_sequential() %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), 
+                activation = 'relu', input_shape = c(150, 150, 3)) %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+
+model4 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = 'adam', 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history4, eval=FALSE}
+history <- model4 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 100, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model4, eval=FALSE}
+evaluate_model4 <- model4 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model4, eval=FALSE}
+save_model_tf(model4, "rds/modele/model4")
+saveRDS(list(history, evaluate_model4), "rds/model4_list.rds")
+```
+
+```{r wczytanie model4}
+model4 <- load_model_tf("rds/modele/model4")
+model4_list <- readRDS("rds/model4_list.rds")
+history4 <- model4_list[[1]]
+evaluate_model4 <- model4_list[[2]]
+```
+
+```{r pokazanie modelu4}
+model4
+```
+
+
+```{r czwarta sieć}
+#| label: fig-history4
+#| fig-cap: Uczenie modelu 4
+plot(history4)
+```
+
+Niestety nie przyniosło to pozytywnego wyniku, model nie jest lepszy od poprzedniego.
+
+:::
+
+## Modele z zastosowaniem wstępnie wytrenowanych sieci
+
+::: {.panel-tabset}
+
+## 1
+
+W tym modelu zastosowałem wstępnie wytrenowaną sieć *vgg16*. Po niej znajdują się warstwy gęste o 128,128,32 i 14 neuronach. Wagi wytrenowanej sieci zostały zamrożone, aby nie uczyć jej od nowa.
+
+
+```{r sieci do transfer learning}
+conv_vgg <- application_vgg16(
+  weights = "imagenet",
+  include_top = FALSE,
+  input_shape = c(150, 150, 3)
+)
+
+conv_mobilenet <- application_mobilenet(
+  weights = "imagenet",
+  include_top = FALSE,
+  input_shape = c(150, 150, 3)
+)
+
+conv_densenet <- application_densenet121(
+  weights = "imagenet",
+  include_top = FALSE,
+  input_shape = c(150, 150, 3)
+)
+```
+
+
+```{r model5, eval=FALSE}
+model5 <- keras_model_sequential() %>%
+  conv_vgg %>%
+  layer_flatten() %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+layer_dense(units = 14, activation = 'softmax')
+
+freeze_weights(conv_vgg)
+
+model5 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_adam(lr = 1e-4), 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history5, eval=FALSE}
+history <- model5 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model5, eval=FALSE}
+evaluate_model5 <- model5 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model5, eval=FALSE}
+save_model_tf(model5, "rds/modele/model5")
+saveRDS(list(history, evaluate_model5), "rds/model5_list.rds")
+```
+
+```{r wczytanie model5}
+model5 <- load_model_tf("rds/modele/model5")
+model5_list <- readRDS("rds/model5_list.rds")
+history5 <- model5_list[[1]]
+evaluate_model5 <- model5_list[[2]]
+```
+
+```{r pokazanie vgg16}
+conv_vgg
+```
+
+
+```{r pokazanie modelu5}
+model5
+```
+
+```{r piąta sieć}
+#| label: fig-history5
+#| fig-cap: Uczenie modelu 5
+plot(history5)
+```
+
+Wyniki są znacząco lepsze od poprzednich modeli. Nie występuje duże przeuczenie, poza sytuacją *precision*.
+
+## 2
+
+Zmieniłem wstępnie wytrenowaną sieć na *mobilenet*. 
+
+```{r model6, eval=FALSE}
+model6 <- keras_model_sequential() %>%
+  conv_mobilenet %>%
+  layer_flatten() %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+
+freeze_weights(conv_mobilenet)
+
+model6 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_adam(lr = 1e-4), 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history6, eval=FALSE}
+history <- model6 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model6, eval=FALSE}
+evaluate_model6 <- model6 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model6, eval=FALSE}
+save_model_tf(model6, "rds/modele/model6")
+saveRDS(list(history, evaluate_model6), "rds/model6_list.rds")
+```
+
+```{r wczytanie model6}
+model6 <- load_model_tf("rds/modele/model6")
+model6_list <- readRDS("rds/model6_list.rds")
+history6 <- model6_list[[1]]
+evaluate_model6 <- model6_list[[2]]
+```
+
+```{r pokazanie mobilenet}
+#| class: output
+conv_mobilenet
+```
+
+```{r pokazanie modelu6}
+model6
+```
+
+```{r szósta sieć}
+#| label: fig-history6
+#| fig-cap: Uczenie modelu 6
+plot(history6)
+```
+
+Model dopasował się marginalnie lepiej od *vgg16*. Zniknęło również przeuczenie na podstawie *precision*.
+
+## 3
+
+Zmieniłem wstępnie wytrenowaną sieć na *densenet*. 
+
+```{r model7, eval=FALSE}
+model7 <- keras_model_sequential() %>%
+  conv_densenet %>%
+  layer_flatten() %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 14, activation = 'softmax')
+
+freeze_weights(conv_densenet)
+
+model7 %>% compile( 
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_adam(lr = 1e-4), 
+    metrics = c('accuracy', metric_recall(), metric_precision(), metric_auc()))
+```
+
+```{r history7, eval=FALSE}
+history <- model7 %>% fit(
+    train_generator, 
+    steps_per_epoch = steps_per_epoch, 
+    epochs = 30, 
+    validation_data = val_generator, 
+    validation_steps = val_steps
+)
+```
+
+```{r ewaluacja model7, eval=FALSE}
+evaluate_model7 <- model7 %>% evaluate(test_generator, steps = 10)
+```
+
+```{r zapisy model7, eval=FALSE}
+save_model_tf(model7, "rds/modele/model7")
+saveRDS(list(history, evaluate_model7), "rds/model7_list.rds")
+```
+
+```{r wczytanie model7}
+model7 <- load_model_tf("rds/modele/model7")
+model7_list <- readRDS("rds/model7_list.rds")
+history7 <- model7_list[[1]]
+evaluate_model7 <- model7_list[[2]]
+```
+
+```{r pokazanie densenet}
+#| class: output
+conv_densenet
+```
+
+```{r pokazanie modelu7}
+model7
+```
+
+```{r siódma sieć}
+#| label: fig-history7
+#| fig-cap: Uczenie modelu 7
+plot(history7)
+```
+
+:::
+
+# Podsumowanie i wnioski
+
+```{r stworzenie tabeli z wynikami}
+tabela_wynikow <- as.data.frame(rbind(round(evaluate_model1,2), 
+                                      round(evaluate_model2,2), 
+                                      round(evaluate_model3,2), 
+                                      round(evaluate_model4,2),
+                                      round(evaluate_model5,2),
+                                      round(evaluate_model6,2),
+                                      round(evaluate_model7,2)))
+rownames(tabela_wynikow) <- c("model 1", "model 2", "model 3", "model 4", "model 5", "model 6", "model 7")
+colnames(tabela_wynikow) <- c("loss", "accuracy", "recall", "precision", "auc")
+```
+
+```{r}
+#| label: tbl-tabela-wynikow
+#| tbl-cap: Wartości metryk na zbiorze testowym poszczególnych modeli
+tabela_wynikow %>% gt(rownames_to_stub = T)
+```
+
+Na podstawie @tbl-tabela-wynikow możemy zauważyć różnice pomiędzy różnymi podejściami do tworzenia architektur sieci neuronowych. Pierwsze modele, które są na podstawie warstw gęstych wyszły najgorzej i przeuczyły się.
+
+Modele bazowane na warstwach konwolucyjnych znacznie lepiej poradziły sobie z tym zadaniem, natomiast ta poprawa wymagała bardzo długiego czasu uczenia.
+
+Na koniec użyłem sieci wstępnie nauczonych, gdzie *densenet* sprawdził się najlepiej. Wynik *accuracy* na poziomie 0.71 nie jest idealny, natomiast jest sporą przepaścią względem początkowych modeli. 
